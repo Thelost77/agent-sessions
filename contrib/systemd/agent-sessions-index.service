@@ -1,0 +1,6 @@
+[Unit]
+Description=Index local coding-agent sessions
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/agent-sessions index --quiet

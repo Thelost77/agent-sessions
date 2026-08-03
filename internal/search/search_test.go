@@ -1,0 +1,119 @@
+package search
+
+import (
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Thelost77/agent-sessions/internal/chunk"
+	"github.com/Thelost77/agent-sessions/internal/embed"
+	"github.com/Thelost77/agent-sessions/internal/model"
+	"github.com/Thelost77/agent-sessions/internal/store"
+)
+
+type semanticFixture struct{}
+
+func (semanticFixture) Fingerprint() string { return "fixture:v1" }
+func (semanticFixture) Embed(context.Context, []string) ([][]float32, error) {
+	return [][]float32{{1, 0}}, nil
+}
+
+func TestHybridSearchFindsSessionAndDeduplicatesChunks(t *testing.T) {
+	ctx := context.Background()
+	storage, err := store.Open(ctx, filepath.Join(t.TempDir(), "index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+
+	source := model.Source{Key: "source", Harness: "pi", Path: "/sessions/pi.jsonl", Version: "1"}
+	sessions := []model.Session{
+		{Key: "qr", Harness: "pi", NativeID: "qr-session", Name: "QR generation", CWD: "/work/QrCodes", SourceKey: "source", SourcePath: source.Path, UpdatedAt: time.Unix(20, 0)},
+		{Key: "invoice", Harness: "pi", NativeID: "invoice-session", Name: "Invoices", CWD: "/work/billing", SourceKey: "source", SourcePath: source.Path, UpdatedAt: time.Unix(10, 0)},
+	}
+	entries := []model.Entry{
+		{Key: "qr-1", SessionKey: "qr", NativeID: "entry-qr-1", Role: "user", Kind: "message", Text: "Generate QR codes without assets and print them later"},
+		{Key: "qr-2", SessionKey: "qr", NativeID: "entry-qr-2", Role: "assistant", Kind: "message", Text: "Open the empty-state generation dialog"},
+		{Key: "invoice-1", SessionKey: "invoice", NativeID: "entry-invoice", Role: "user", Kind: "message", Text: "Investigate an invoice payment failure"},
+	}
+	if err := storage.UpsertSource(ctx, source, model.ParsedSource{Sessions: sessions, Entries: entries}, chunk.Entries(entries)); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := storage.PendingChunks(ctx, "fixture:v1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]int64, len(pending))
+	vectors := make([][]byte, len(pending))
+	for index, item := range pending {
+		ids[index] = item.ID
+		vector := []float32{0, 1}
+		if strings.Contains(item.Text, "QR") || strings.Contains(item.Text, "empty-state") {
+			vector = []float32{1, 0}
+		}
+		vectors[index] = embed.Encode(vector)
+	}
+	if err := storage.UpdateEmbeddings(ctx, "fixture:v1", 2, ids, vectors); err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := (&Searcher{Store: storage, Embedder: semanticFixture{}}).Search(ctx, "print stickers before assignment", Filters{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) == 0 || response.Results[0].SessionID != "qr-session" {
+		t.Fatalf("unexpected semantic results: %#v", response.Results)
+	}
+	seen := 0
+	for _, result := range response.Results {
+		if result.SessionID == "qr-session" {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("QR session appeared %d times", seen)
+	}
+}
+
+func TestFuzzyExactAndPathFilters(t *testing.T) {
+	ctx := context.Background()
+	storage, err := store.Open(ctx, filepath.Join(t.TempDir(), "index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+	source := model.Source{Key: "source", Harness: "codex", Path: "/session", Version: "1"}
+	session := model.Session{Key: "session", Harness: "codex", NativeID: "abc-123", Name: "Empty state", CWD: "/work/QrCodes/ui", SourceKey: source.Key, SourcePath: source.Path}
+	entry := model.Entry{Key: "entry", SessionKey: session.Key, NativeID: "message", Role: "user", Kind: "message", Text: "Generate QR codes from the empty state"}
+	if err := storage.UpsertSource(ctx, source, model.ParsedSource{Sessions: []model.Session{session}, Entries: []model.Entry{entry}}, chunk.Entries([]model.Entry{entry})); err != nil {
+		t.Fatal(err)
+	}
+
+	searcher := &Searcher{Store: storage}
+	response, err := searcher.Search(ctx, "genrate qr cdoes emtpy state", Filters{Path: "/work/QrCodes", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) == 0 || response.Results[0].SessionID != "abc-123" {
+		t.Fatalf("fuzzy results: %#v", response.Results)
+	}
+
+	exact, err := searcher.Search(ctx, "abc-123", Filters{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exact.Results) == 0 || exact.Results[0].Ranks.Exact != 1 {
+		t.Fatalf("exact results: %#v", exact.Results)
+	}
+
+	filtered, err := searcher.Search(ctx, "empty state", Filters{Path: "/other", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered.Results) != 0 {
+		t.Fatalf("path filter returned %#v", filtered.Results)
+	}
+}
