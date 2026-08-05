@@ -15,6 +15,7 @@ import (
 )
 
 const (
+	DefaultLimit   = 3
 	candidateLimit = 100
 	rrfK           = 60.0
 )
@@ -36,19 +37,20 @@ type ChannelRanks struct {
 }
 
 type Result struct {
-	Harness      string       `json:"harness"`
-	SessionID    string       `json:"sessionId"`
-	ParentID     string       `json:"parentId,omitempty"`
-	Name         string       `json:"name"`
-	CWD          string       `json:"cwd,omitempty"`
-	StartedAt    time.Time    `json:"startedAt,omitempty"`
-	UpdatedAt    time.Time    `json:"updatedAt,omitempty"`
-	SourcePath   string       `json:"sourcePath"`
-	EntryID      string       `json:"entryId,omitempty"`
-	Excerpt      string       `json:"excerpt,omitempty"`
-	Resume       string       `json:"resume"`
-	Ranks        ChannelRanks `json:"ranks,omitempty"`
-	CombinedRank int          `json:"rank"`
+	Harness            string       `json:"harness"`
+	SessionID          string       `json:"sessionId"`
+	ParentID           string       `json:"parentId,omitempty"`
+	Name               string       `json:"name"`
+	CWD                string       `json:"cwd,omitempty"`
+	StartedAt          time.Time    `json:"startedAt,omitempty"`
+	UpdatedAt          time.Time    `json:"updatedAt,omitempty"`
+	SourcePath         string       `json:"sourcePath"`
+	EntryID            string       `json:"entryId,omitempty"`
+	Excerpt            string       `json:"excerpt,omitempty"`
+	Resume             string       `json:"resume"`
+	Ranks              ChannelRanks `json:"ranks,omitempty"`
+	SemanticSimilarity float64      `json:"semanticSimilarity,omitempty"`
+	CombinedRank       int          `json:"rank"`
 }
 
 type Response struct {
@@ -57,8 +59,9 @@ type Response struct {
 }
 
 type Searcher struct {
-	Store    *store.Store
-	Embedder embed.Provider
+	Store             *store.Store
+	Embedder          embed.Provider
+	SemanticThreshold float64
 }
 
 type candidate struct {
@@ -88,7 +91,7 @@ func (s *Searcher) Search(ctx context.Context, query string, filters Filters) (R
 		return Response{}, fmt.Errorf("search query is empty")
 	}
 	if filters.Limit <= 0 {
-		filters.Limit = 10
+		filters.Limit = DefaultLimit
 	}
 
 	exact, err := s.exact(ctx, query, filters)
@@ -309,6 +312,9 @@ func (s *Searcher) semantic(ctx context.Context, query string, filters Filters) 
 			continue
 		}
 		item.RawScore, _ = embed.Dot(queryVector, vector)
+		if item.RawScore < s.SemanticThreshold {
+			continue
+		}
 		if top.Len() < candidateLimit {
 			heap.Push(top, item)
 		} else if item.RawScore > (*top)[0].RawScore {
@@ -332,6 +338,7 @@ func fuse(limit int, channels []rankedChannel) []Result {
 		score     float64
 		best      float64
 		ranks     ChannelRanks
+		semantic  float64
 	}
 	values := map[string]*aggregate{}
 	for _, channel := range channels {
@@ -365,6 +372,7 @@ func fuse(limit int, channels []rankedChannel) []Result {
 				value.ranks.Fuzzy = sessionRank
 			case "semantic":
 				value.ranks.Semantic = sessionRank
+				value.semantic = item.RawScore
 			}
 		}
 	}
@@ -393,7 +401,8 @@ func fuse(limit int, channels []rankedChannel) []Result {
 			StartedAt: fromMillis(candidate.StartedAt), UpdatedAt: fromMillis(candidate.UpdatedAt),
 			SourcePath: candidate.SourcePath, EntryID: candidate.EntryID,
 			Excerpt: excerpt(candidate.Text, 320), Resume: resumeHint(candidate),
-			Ranks: item.value.ranks, CombinedRank: index + 1,
+			Ranks: item.value.ranks, SemanticSimilarity: item.value.semantic,
+			CombinedRank: index + 1,
 		}
 	}
 	return results

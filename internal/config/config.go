@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	DefaultEmbeddingURL   = "http://127.0.0.1:11434"
-	DefaultEmbeddingModel = "all-minilm"
+	DefaultEmbeddingURL      = "http://127.0.0.1:11434"
+	DefaultEmbeddingModel    = "all-minilm"
+	DefaultSemanticThreshold = 0.60
 )
 
 type Config struct {
@@ -22,8 +23,9 @@ type Config struct {
 }
 
 type EmbeddingConfig struct {
-	URL   string `toml:"url"`
-	Model string `toml:"model"`
+	URL       string  `toml:"url"`
+	Model     string  `toml:"model"`
+	Threshold float64 `toml:"threshold"`
 }
 
 type SourcesConfig struct {
@@ -47,8 +49,9 @@ func Default() (Config, error) {
 	return Config{
 		Index: filepath.Join(dataHome, "agent-sessions", "index.sqlite"),
 		Embedding: EmbeddingConfig{
-			URL:   DefaultEmbeddingURL,
-			Model: DefaultEmbeddingModel,
+			URL:       DefaultEmbeddingURL,
+			Model:     DefaultEmbeddingModel,
+			Threshold: DefaultSemanticThreshold,
 		},
 		Harnesses: map[string]bool{
 			"pi":       true,

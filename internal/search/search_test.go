@@ -67,6 +67,9 @@ func TestHybridSearchFindsSessionAndDeduplicatesChunks(t *testing.T) {
 	if len(response.Results) == 0 || response.Results[0].SessionID != "qr-session" {
 		t.Fatalf("unexpected semantic results: %#v", response.Results)
 	}
+	if response.Results[0].SemanticSimilarity != 1 {
+		t.Fatalf("semantic similarity = %f, want 1", response.Results[0].SemanticSimilarity)
+	}
 	seen := 0
 	for _, result := range response.Results {
 		if result.SessionID == "qr-session" {
@@ -75,6 +78,84 @@ func TestHybridSearchFindsSessionAndDeduplicatesChunks(t *testing.T) {
 	}
 	if seen != 1 {
 		t.Fatalf("QR session appeared %d times", seen)
+	}
+}
+
+func TestSemanticThresholdExcludesWeakCandidates(t *testing.T) {
+	ctx := context.Background()
+	storage, err := store.Open(ctx, filepath.Join(t.TempDir(), "index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+
+	source := model.Source{Key: "source", Harness: "pi", Path: "/sessions/pi.jsonl", Version: "1"}
+	sessions := []model.Session{
+		{Key: "strong", Harness: "pi", NativeID: "strong-session", Name: "Strong", SourceKey: source.Key, SourcePath: source.Path},
+		{Key: "weak", Harness: "pi", NativeID: "weak-session", Name: "Weak", SourceKey: source.Key, SourcePath: source.Path},
+	}
+	entries := []model.Entry{
+		{Key: "strong-entry", SessionKey: "strong", NativeID: "strong-entry", Role: "user", Kind: "message", Text: "alpha"},
+		{Key: "weak-entry", SessionKey: "weak", NativeID: "weak-entry", Role: "user", Kind: "message", Text: "beta"},
+	}
+	if err := storage.UpsertSource(ctx, source, model.ParsedSource{Sessions: sessions, Entries: entries}, chunk.Entries(entries)); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := storage.PendingChunks(ctx, "fixture:v1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]int64, len(pending))
+	vectors := make([][]byte, len(pending))
+	for index, item := range pending {
+		ids[index] = item.ID
+		vector := []float32{0.59, 0.807403}
+		if item.Text == "alpha" {
+			vector = []float32{0.61, 0.792401}
+		}
+		vectors[index] = embed.Encode(vector)
+	}
+	if err := storage.UpdateEmbeddings(ctx, "fixture:v1", 2, ids, vectors); err != nil {
+		t.Fatal(err)
+	}
+
+	searcher := &Searcher{Store: storage, Embedder: semanticFixture{}, SemanticThreshold: 0.60}
+	candidates, err := searcher.semantic(ctx, "unrelated", Filters{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].SessionID != "strong-session" {
+		t.Fatalf("semantic candidates: %#v", candidates)
+	}
+}
+
+func TestSearchDefaultsToThreeResults(t *testing.T) {
+	ctx := context.Background()
+	storage, err := store.Open(ctx, filepath.Join(t.TempDir(), "index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer storage.Close()
+
+	source := model.Source{Key: "source", Harness: "pi", Path: "/sessions/pi.jsonl", Version: "1"}
+	var sessions []model.Session
+	var entries []model.Entry
+	for index := 0; index < 4; index++ {
+		key := string(rune('a' + index))
+		sessions = append(sessions, model.Session{Key: key, Harness: "pi", NativeID: key, Name: "Shared result", SourceKey: source.Key, SourcePath: source.Path})
+		entries = append(entries, model.Entry{Key: key + "-entry", SessionKey: key, NativeID: key + "-entry", Role: "user", Kind: "message", Text: "shared search phrase"})
+	}
+	if err := storage.UpsertSource(ctx, source, model.ParsedSource{Sessions: sessions, Entries: entries}, chunk.Entries(entries)); err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := (&Searcher{Store: storage}).Search(ctx, "shared search phrase", Filters{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 3 {
+		t.Fatalf("default result count = %d, want 3", len(response.Results))
 	}
 }
 

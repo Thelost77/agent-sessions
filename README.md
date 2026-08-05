@@ -11,6 +11,7 @@ It supports [Pi](https://github.com/badlogic/pi-mono), [Codex](https://github.co
 - Find misspelled terms with character n-grams.
 - Find related text with local Ollama embeddings.
 - Combine search channels into one result per session.
+- Reject semantic matches below a configurable relevance threshold.
 - Filter by harness, project path, role, and date.
 - Print native session IDs and resume commands.
 - Produce JSON output for scripts and other tools.
@@ -84,10 +85,16 @@ agent-sessions search \
   "empty state"
 ```
 
-Show the rank from each search channel:
+Show each channel rank and the semantic similarity:
 
 ```sh
 agent-sessions search --explain "genrate qr cdoes emtpy state"
+```
+
+Use a stricter semantic threshold:
+
+```sh
+agent-sessions search --semantic-threshold 0.70 "audiobook playback failure"
 ```
 
 Disable semantic search:
@@ -143,6 +150,8 @@ Each result contains:
 
 The command prints resume commands but does not run them.
 
+The default result limit is three. `--limit` sets a maximum and does not force the search to fill that count.
+
 ### `status`
 
 `status` reports source, session, chunk, embedding, pending-vector, and parser-warning counts.
@@ -161,6 +170,7 @@ index = "~/.local/share/agent-sessions/index.sqlite"
 [embedding]
 url = "http://127.0.0.1:11434"
 model = "all-minilm"
+threshold = 0.60
 
 [harnesses]
 pi = true
@@ -179,6 +189,8 @@ opencode = ""
 Set `AGENT_SESSIONS_CONFIG` to use a different file. Command flags override configuration values.
 
 The embedding URL must use a loopback address. This rule prevents accidental uploads of private session text.
+
+The default semantic threshold is `0.60` for `all-minilm`. The semantic channel accepts only candidates at or above this cosine similarity.
 
 ## Source Data
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -151,10 +152,11 @@ func runSearch(ctx context.Context, cfg config.Config, args []string) error {
 	roles := flags.String("role", "", "comma-separated roles")
 	since := flags.String("since", "", "minimum session date")
 	before := flags.String("before", "", "maximum session date")
-	limit := flags.Int("limit", 10, "maximum session results")
+	limit := flags.Int("limit", search.DefaultLimit, "maximum session results")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 	explain := flags.Bool("explain", false, "show retrieval channel ranks")
 	lexicalOnly := flags.Bool("lexical-only", false, "skip semantic retrieval")
+	semanticThreshold := flags.Float64("semantic-threshold", cfg.Embedding.Threshold, "minimum semantic cosine similarity")
 	addCommonFlags(flags, &cfg)
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -168,6 +170,9 @@ func runSearch(ctx context.Context, cfg config.Config, args []string) error {
 	}
 	if *limit < 1 || *limit > 100 {
 		return fmt.Errorf("limit must be between 1 and 100")
+	}
+	if math.IsNaN(*semanticThreshold) || *semanticThreshold < 0 || *semanticThreshold > 1 {
+		return fmt.Errorf("semantic threshold must be between 0 and 1")
 	}
 	selected, err := parseHarnessList(*harnesses)
 	if err != nil {
@@ -204,7 +209,9 @@ func runSearch(ctx context.Context, cfg config.Config, args []string) error {
 			return err
 		}
 	}
-	response, err := (&search.Searcher{Store: storage, Embedder: embedder}).Search(ctx, query, search.Filters{
+	response, err := (&search.Searcher{
+		Store: storage, Embedder: embedder, SemanticThreshold: *semanticThreshold,
+	}).Search(ctx, query, search.Filters{
 		Harnesses: selected, Path: *path, Roles: roleValues,
 		Since: sinceTime, Before: beforeTime, Limit: *limit,
 	})
@@ -464,7 +471,9 @@ func printResults(results []search.Result, explain bool) {
 				parts = append(parts, "fuzzy="+strconv.Itoa(result.Ranks.Fuzzy))
 			}
 			if result.Ranks.Semantic > 0 {
-				parts = append(parts, "semantic="+strconv.Itoa(result.Ranks.Semantic))
+				semantic := "semantic=" + strconv.Itoa(result.Ranks.Semantic)
+				semantic += " (similarity=" + strconv.FormatFloat(result.SemanticSimilarity, 'f', 3, 64) + ")"
+				parts = append(parts, semantic)
 			}
 			fmt.Println("\n   Ranks: " + strings.Join(parts, ", "))
 		}
