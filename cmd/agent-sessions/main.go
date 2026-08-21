@@ -202,7 +202,7 @@ func runSearch(ctx context.Context, cfg config.Config, args []string) error {
 		return err
 	}
 	defer storage.Close()
-	var embedder *embed.Client
+	var embedder embed.Provider
 	if !*lexicalOnly {
 		embedder, err = embed.New(cfg.Embedding.URL, cfg.Embedding.Model)
 		if err != nil {
